@@ -1,10 +1,10 @@
 """
 XADREZ - Jogador vs. Jogador (PvP)
 
-Já funciona: peças com herança/polimorfismo, tabuleiro desenhado no Canvas,
-mover clicando e alternância de turnos.
-Falta: menu inicial, classe Jogo, menu superior, promoção do peão, xeque,
-xeque-mate, roque, en passant e histórico de lances.
+Projeto de POO com Tkinter. Etapa 1: peças (herança/polimorfismo), tabuleiro,
+turnos, menu inicial e Canvas.
+Falta: xeque/xeque-mate, roque, en passant, promoção, histórico, capturas,
+janela "Sobre" (Toplevel). Coordenadas: (linha, coluna); linha 0 = topo.
 """
 
 import sys
@@ -14,9 +14,21 @@ from tkinter import messagebox
 BRANCAS = "brancas"
 PRETAS = "pretas"
 
+COR_FUNDO = "#2B2926"
+COR_TEXTO = "#EDEDED"
+
+
+def oposta(cor):
+    return PRETAS if cor == BRANCAS else BRANCAS
+
 
 def dentro(linha, coluna):
+    """True se (linha, coluna) é uma casa válida do tabuleiro."""
     return 0 <= linha < 8 and 0 <= coluna < 8
+
+
+class MovimentoInvalidoError(Exception):
+    """Lançada quando o jogador tenta algo que as regras não permitem."""
 
 
 # =============================================================================
@@ -109,7 +121,7 @@ class Peao(Peca):
 
     def __init__(self, cor=BRANCAS, linha=0, coluna=0):
         super().__init__(cor, linha, coluna)
-        self.direcao = -1 if cor == BRANCAS else 1      # brancas sobem
+        self.direcao = -1 if cor == BRANCAS else 1     # brancas sobem
         self.linha_inicial = 6 if cor == BRANCAS else 1
 
     def movimentos(self, tabuleiro):
@@ -130,11 +142,10 @@ class Peao(Peca):
 
 
 # =============================================================================
-# TABULEIRO
+# TABULEIRO E JOGO
 # =============================================================================
 class Tabuleiro:
     """Matriz 8x8 de peças."""
-
     def __init__(self):
         self.casas = [[None] * 8 for _ in range(8)]
         ordem = [Torre, Cavalo, Bispo, Rainha, Rei, Bispo, Cavalo, Torre]
@@ -154,87 +165,188 @@ class Tabuleiro:
         return self.casas[linha][coluna]
 
     def mover(self, origem, destino):
-        """Move a peça e devolve a peça capturada (ou None)."""
-        capturada = self.obter(*destino)
         peca = self.obter(*origem)
+        capturada = self.obter(*destino)
         self.casas[origem[0]][origem[1]] = None
         self.colocar(peca, *destino)
+        if isinstance(peca, Peao) and destino[0] in (0, 7):
+            self.colocar(Rainha(peca.cor), *destino)    # promoção automática
         return capturada
 
 
+class Jogo:
+    def __init__(self):
+        self.tabuleiro = Tabuleiro()
+        self.turno = BRANCAS
+        self.em_andamento = True
+        self.vencedor = None
+
+    def movimentos_da_peca(self, linha, coluna):
+        if not self.em_andamento:
+            raise MovimentoInvalidoError("A partida já terminou.")
+        peca = self.tabuleiro.obter(linha, coluna)
+        if peca is None:
+            raise MovimentoInvalidoError("Não há peça nessa casa.")
+        if peca.cor != self.turno:
+            raise MovimentoInvalidoError(f"É a vez das {self.turno}.")
+        destinos = peca.movimentos(self.tabuleiro)
+        if not destinos:
+            raise MovimentoInvalidoError(f"{peca.nome} sem movimentos agora.")
+        return destinos
+
+    def mover(self, origem, destino):
+        if destino not in self.movimentos_da_peca(*origem):
+            peca = self.tabuleiro.obter(*origem)
+            raise MovimentoInvalidoError(f"{peca.nome} não pode ir para essa casa.")
+        capturada = self.tabuleiro.mover(origem, destino)
+        if isinstance(capturada, Rei):      # provisório: ainda sem xeque-mate
+            self.em_andamento = False
+            self.vencedor = self.turno
+        else:
+            self.turno = oposta(self.turno)
+
+
 # =============================================================================
-# INTERFACE
+# INTERFACE (Tkinter)
 # =============================================================================
-class ChessApp(tk.Tk):
+class TelaMenu(tk.Frame):
+    def __init__(self, master, ao_jogar, ao_sair):
+        super().__init__(master, bg=COR_FUNDO)
+        centro = tk.Frame(self, bg=COR_FUNDO)
+        centro.pack(expand=True)
+        tk.Label(centro, text="XADREZ", font=("Helvetica", 44, "bold"),
+                 bg=COR_FUNDO, fg=COR_TEXTO).pack(pady=(0, 30))
+        tk.Button(centro, text="Jogar", width=20, command=ao_jogar).pack(pady=6)
+        tk.Button(centro, text="Sair", width=20, command=ao_sair).pack(pady=6)
+
+
+class TelaJogo(tk.Frame):
     CASA = 64
+    MARGEM = 20
     COR_CLARA = "#F0D9B5"
     COR_ESCURA = "#B58863"
     COR_SELECAO = "#F5E663"
 
-    def __init__(self):
-        super().__init__()
-        self.title("Xadrez \u2014 Python & Tkinter")
-        self.resizable(False, False)
-        self.fonte = ("Segoe UI Symbol" if sys.platform == "win32" else "DejaVu Sans",
-                      -int(self.CASA * 0.74))
+    def __init__(self, master, ao_voltar, fonte):
+        super().__init__(master, bg=COR_FUNDO)
+        self.jogo = Jogo()
+        self.ao_voltar = ao_voltar
+        self.fonte = (fonte, -int(self.CASA * 0.74))
+        self.selecionada = None
+        self.destinos = []
 
-        self.tabuleiro = Tabuleiro()
-        self.turno = BRANCAS
-        self.selecionada = None      # (linha, coluna) da peça selecionada
-        self.destinos = []           # destinos possíveis dessa peça
-
-        self.lbl_turno = tk.Label(self, font=("Helvetica", 14, "bold"))
-        self.lbl_turno.pack(pady=6)
-        self.canvas = tk.Canvas(self, width=8 * self.CASA, height=8 * self.CASA)
-        self.canvas.pack()
+        self.var_status = tk.StringVar()
+        tk.Label(self, textvariable=self.var_status, bg=COR_FUNDO, fg=COR_TEXTO,
+                 font=("Helvetica", 14, "bold")).pack(pady=(10, 0))
+        lado = 8 * self.CASA + 2 * self.MARGEM
+        self.canvas = tk.Canvas(self, width=lado, height=lado, bg=COR_FUNDO,
+                                highlightthickness=0)
+        self.canvas.pack(pady=6)
         self.canvas.bind("<Button-1>", self.ao_clicar)
+        tk.Button(self, text="Voltar ao menu", command=self.ao_voltar).pack()
         self.desenhar()
 
     def desenhar(self):
         self.canvas.delete("all")
-        t = self.CASA
+        t, m = self.CASA, self.MARGEM
         for linha in range(8):
             for coluna in range(8):
                 cor = self.COR_CLARA if (linha + coluna) % 2 == 0 else self.COR_ESCURA
                 if self.selecionada == (linha, coluna):
                     cor = self.COR_SELECAO
-                x, y = coluna * t, linha * t
+                x, y = m + coluna * t, m + linha * t
                 self.canvas.create_rectangle(x, y, x + t, y + t, fill=cor, outline=cor)
-                if (linha, coluna) in self.destinos:
+                if (linha, coluna) in self.destinos:        # bolinha de destino
                     self.canvas.create_oval(x + 24, y + 24, x + 40, y + 40,
                                             fill="#5E8C31", outline="")
-                peca = self.tabuleiro.obter(linha, coluna)
+                peca = self.jogo.tabuleiro.obter(linha, coluna)
                 if peca is not None:
-                    self.canvas.create_text(
-                        x + t / 2, y + t / 2, text=peca.simbolo, font=self.fonte,
-                        fill="white" if peca.cor == BRANCAS else "black")
-        self.lbl_turno.config(text=f"Vez das {self.turno}")
+                    self.desenhar_peca(peca, x + t / 2, y + t / 2)
+        if self.jogo.em_andamento:
+            self.var_status.set(f"Vez das {self.jogo.turno}")
+        else:
+            self.var_status.set(f"Fim de jogo! As {self.jogo.vencedor} venceram")
+
+    def desenhar_peca(self, peca, cx, cy):
+        if peca.cor == BRANCAS:
+            for dx, dy in ((-1.5, 0), (1.5, 0), (0, -1.5), (0, 1.5)):
+                self.canvas.create_text(cx + dx, cy + dy, text=peca.simbolo,
+                                        font=self.fonte, fill="black")
+        self.canvas.create_text(cx, cy, text=peca.simbolo, font=self.fonte,
+                                fill="white" if peca.cor == BRANCAS else "#111111")
 
     def ao_clicar(self, evento):
-        linha, coluna = evento.y // self.CASA, evento.x // self.CASA
+        coluna = (evento.x - self.MARGEM) // self.CASA
+        linha = (evento.y - self.MARGEM) // self.CASA
         if not dentro(linha, coluna):
             return
-        peca = self.tabuleiro.obter(linha, coluna)
+        try:
+            self.tratar_clique(linha, coluna)
+        except MovimentoInvalidoError as erro:
+            messagebox.showwarning("Movimento inválido", erro, parent=self)
 
-        if peca is not None and peca.cor == self.turno:      # (re)seleciona
-            self.selecionada = (linha, coluna)
-            self.destinos = peca.movimentos(self.tabuleiro)
-        elif self.selecionada is None:
-            messagebox.showwarning("Movimento inválido",
-                                   f"Selecione uma peça das {self.turno}.")
-        elif (linha, coluna) not in self.destinos:
-            messagebox.showwarning("Movimento inválido",
-                                   "Essa peça não pode ir para essa casa.")
-        else:                                                # move
-            capturada = self.tabuleiro.mover(self.selecionada, (linha, coluna))
+    def tratar_clique(self, linha, coluna):
+        clicada = (linha, coluna)
+        peca = self.jogo.tabuleiro.obter(linha, coluna)
+        if self.selecionada is None or (peca and peca.cor == self.jogo.turno):
+            self.destinos = self.jogo.movimentos_da_peca(linha, coluna)  # valida
+            self.selecionada = clicada
+        else:
+            self.jogo.mover(self.selecionada, clicada)
             self.selecionada, self.destinos = None, []
-            if isinstance(capturada, Rei):                   # provisório
-                self.desenhar()
-                messagebox.showinfo("Fim de jogo", f"As {self.turno} venceram!")
-                self.tabuleiro = Tabuleiro()
-                self.turno = PRETAS                          # volta p/ brancas abaixo
-            self.turno = PRETAS if self.turno == BRANCAS else BRANCAS
         self.desenhar()
+        if not self.jogo.em_andamento:
+            messagebox.showinfo("Fim de jogo", self.var_status.get(), parent=self)
+
+
+class ChessApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Xadrez \u2014 Python & Tkinter")
+        self.configure(bg=COR_FUNDO)
+        self.geometry("620x700")
+
+        self.fonte = "Segoe UI Symbol" if sys.platform == "win32" else "DejaVu Sans"
+
+        barra = tk.Menu(self)
+        arquivo = tk.Menu(barra, tearoff=0)
+        arquivo.add_command(label="Sair", command=self.confirmar_saida)
+        barra.add_cascade(label="Arquivo", menu=arquivo)
+        ajuda = tk.Menu(barra, tearoff=0)
+        ajuda.add_command(label="Sobre", command=self.mostrar_sobre)
+        barra.add_cascade(label="Ajuda", menu=ajuda)
+        self.config(menu=barra)
+
+        self.container = tk.Frame(self, bg=COR_FUNDO)
+        self.container.pack(fill="both", expand=True)
+        self.tela_menu = TelaMenu(self.container, self.iniciar_partida,
+                                  self.confirmar_saida)
+        self.tela_jogo = None
+        self.tela_atual = None
+        self.mostrar(self.tela_menu)
+        self.protocol("WM_DELETE_WINDOW", self.confirmar_saida)
+
+    def mostrar(self, tela):
+        if self.tela_atual is not None:
+            self.tela_atual.pack_forget()
+        tela.pack(fill="both", expand=True)
+        self.tela_atual = tela
+
+    def iniciar_partida(self):
+        if self.tela_jogo is not None:
+            self.tela_jogo.destroy()
+        self.tela_jogo = TelaJogo(self.container,
+                                  lambda: self.mostrar(self.tela_menu), self.fonte)
+        self.mostrar(self.tela_jogo)
+
+    def confirmar_saida(self):
+        if messagebox.askyesno("Sair", "Deseja realmente sair do jogo?", parent=self):
+            self.destroy()
+
+    def mostrar_sobre(self):
+        # TODO: trocar por uma janela tk.Toplevel
+        messagebox.showinfo("Sobre", "Xadrez PvP - Python + Tkinter\nVersão 0.1",
+                            parent=self)
 
 
 if __name__ == "__main__":
